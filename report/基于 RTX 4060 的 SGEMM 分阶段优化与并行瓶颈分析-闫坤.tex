@@ -20,8 +20,8 @@
   showstringspaces=false
 }
 
-\title{标准实验报告：基于 RTX 4060 的 SGEMM 分阶段优化与并行瓶颈分析}
-\author{realtanua}
+\title{基于 RTX 4060 的 SGEMM 分阶段优化与并行瓶颈分析}
+\author{闫坤 25033176}
 \date{\today}
 
 \begin{document}
@@ -34,7 +34,7 @@
 
 \section{背景与问题提出}
 \subsection{认知背景}
-在本实验中，先通过与ai对话补充知识，然后开始实验，实验中的所有优化建立在以下认知闭环上：
+在正式开展实验前，本实验先通过资料查阅与 AI 辅助问答补齐 CUDA 并行编程相关概念，再将这些概念映射到 SGEMM 优化过程。整体认知路径并不是直接追求某一个局部技巧，而是先理解线程组织、存储层次、数据复用和硬件吞吐之间的关系，再根据性能现象判断当前主要瓶颈。实验中的所有优化均建立在以下认知闭环上：
 \begin{itemize}[leftmargin=2em]
   \item \textbf{执行层级：} Grid $\rightarrow$ Block $\rightarrow$ Warp $\rightarrow$ Thread。
   \item \textbf{时间与空间解耦：} Warp 数量决定空间并行宽度，K 轴循环决定时间展开长度。
@@ -49,6 +49,7 @@
   \item \textbf{Occupancy 不是唯一目标}：高寄存器占用可能降低 Occupancy，但若显著提升数据复用，仍可能获得更高吞吐。
   \item \textbf{profiling 时间解读}：\texttt{ncu} 多 pass 会显著增加程序总时间，需分离“被测 kernel 时间”和“分析开销”。
 \end{itemize}
+因此，本报告在分析每一阶段实验时，均按照“当前结构 $\rightarrow$ 主要瓶颈 $\rightarrow$ 优化方向 $\rightarrow$ 实测结果”的逻辑展开。这样可以避免只罗列优化版本，而忽略不同阶段性能受限原因的变化。
 
 \subsection{实验问题}
 本报告聚焦回答以下问题：
@@ -125,6 +126,13 @@ __global__ void matrixMulNaive(float* A, float* B, float* C, int N) {
   \item 典型瓶颈：global memory 访问频繁、复用不足，易出现 Long Scoreboard Stall。
 \end{itemize}
 
+\textbf{瓶颈分析：}
+\begin{itemize}[leftmargin=2em]
+  \item 每个线程独立计算一个 \(C\) 元素，虽然逻辑简单，但同一行 \(A\) 和同一列 \(B\) 会被大量线程重复从 global memory 读取。
+  \item 单次乘加对应的数据搬运量较大，算术强度低，SM 中的计算单元经常等待显存数据返回。
+  \item 该阶段的核心问题不是线程数量不足，而是数据复用几乎没有建立，性能主要受显存延迟与带宽约束。
+\end{itemize}
+
 \subsection{V2：Shared Memory Tiling}
 \textbf{目标：} 降低 global memory 重复加载。
 
@@ -142,8 +150,18 @@ for (int k = 0; k < 32; ++k)
 __syncthreads();
 \end{lstlisting}
 
-\textbf{结论：}
-通过片上复用显著降低显存往返，性能较 Naive 大幅提升。
+\textbf{现象与结论：}
+\begin{itemize}[leftmargin=2em]
+  \item 通过片上复用显著降低显存往返，性能较 Naive 大幅提升。
+  \item Shared Memory 将同一 tile 内的数据加载成本在多个线程之间摊销，提高了数据局部性。
+\end{itemize}
+
+\textbf{瓶颈分析：}
+\begin{itemize}[leftmargin=2em]
+  \item V2 解决了 Naive 中 global memory 重复读取的问题，但每个线程仍主要负责一个输出元素，单线程计算粒度较小。
+  \item Shared Memory 访问延迟远低于 global memory，但仍需要同步与 tile 加载，\texttt{\_\_syncthreads()} 会带来一定调度开销。
+  \item 此时瓶颈开始从显存延迟转向片上存储访问、同步开销和每线程计算密度不足。
+\end{itemize}
 
 \subsection{V3：Thread Tiling（寄存器外积）}
 \textbf{目标：} 提高每次加载的计算产出（提升算术强度）。
@@ -169,8 +187,18 @@ for (int k = 0; k < BK; ++k) {
 
 \textbf{代表结果：} 35.17ms，3907.926 GFLOPS，正确。
 
-\textbf{结论：}
-单线程计算密度上升后，性能进入约 4 TFLOPS 区间，接近传统 FP32 路径上限。
+\textbf{现象与结论：}
+\begin{itemize}[leftmargin=2em]
+  \item 单线程计算密度上升后，性能进入约 4 TFLOPS 区间，接近传统 FP32 路径上限。
+  \item 寄存器外积使一次 shared memory 读取得到更多乘加操作，算术强度明显提高。
+\end{itemize}
+
+\textbf{瓶颈分析：}
+\begin{itemize}[leftmargin=2em]
+  \item Thread Tiling 增加了寄存器使用量，减少了访存压力，但也可能降低 Occupancy。
+  \item 在该版本中，性能提升说明“更高数据复用”带来的收益大于 Occupancy 下降的代价。
+  \item 继续优化时，单纯扩大 tile 不一定有效，因为寄存器压力、指令调度和 shared memory 带宽会逐渐成为限制因素。
+\end{itemize}
 
 \subsection{V4：Pipeline 双缓冲}
 \textbf{目标：} 重叠“搬运下一块”与“计算当前块”。
@@ -192,8 +220,18 @@ for (int ph = 1; ph < N / BK; ++ph) {
 
 \textbf{代表结果：} 34.16ms，4023.916 GFLOPS，正确。
 
-\textbf{结论：}
-相比 V3 有稳定提升，但幅度有限：说明此时瓶颈已由纯访存等待转向更高层次（算力与调度约束）。
+\textbf{现象与结论：}
+\begin{itemize}[leftmargin=2em]
+  \item 相比 V3 有稳定提升，但幅度有限。
+  \item 双缓冲能够隐藏部分 tile 搬运延迟，但无法改变传统 CUDA Core FP32 计算路径的硬件吞吐上限。
+\end{itemize}
+
+\textbf{瓶颈分析：}
+\begin{itemize}[leftmargin=2em]
+  \item V4 的主要目的不是减少总搬运量，而是让下一块数据加载与当前块计算在时间上尽量重叠。
+  \item 当 V3 已经具备较高数据复用后，可隐藏的访存等待比例下降，因此流水线带来的增益自然小于 V1 到 V3 的结构性收益。
+  \item 此阶段瓶颈已由纯访存等待转向计算吞吐、指令调度、同步边界和片上资源占用的综合约束。
+\end{itemize}
 
 \subsection{V5：Tensor Core（TF32, WMMA）}
 \textbf{目标：} 引入矩阵专用硬件单元。
@@ -213,12 +251,11 @@ wmma::load_matrix_sync(b_frag, b_ptr, BN);
 wmma::mma_sync(c_frag[i][j], a_frag, b_frag, c_frag[i][j]);
 \end{lstlisting}
 
-\textbf{关键排错：}
+\textbf{瓶颈分析：}
 \begin{itemize}[leftmargin=2em]
-  \item 命名空间与符号限定错误；
-  \item TF32 片段形状与实现不匹配（修正为 \texttt{16x16x8}）；
-  \item shared layout 与 \texttt{load\_matrix\_sync} 主序不一致；
-  \item \(B\) tile 搬运未覆盖完整导致结果折半。
+  \item TF32 Tensor Core 将核心乘加从 CUDA Core 转移到矩阵专用单元，理论上具备更高吞吐。
+  \item 实测提升幅度有限，说明仅引入 WMMA 并不自动等价于充分利用 Tensor Core；数据布局、warp 组织、load/store 路径和 tile 覆盖方式都会影响实际效率。
+  \item 在该版本中，传统 FP32 路径已有较好复用，TF32 版本若存在额外搬运、同步或布局开销，容易抵消部分 Tensor Core 计算优势。
 \end{itemize}
 
 \textbf{代表结果：} 33.46ms，4107.132 GFLOPS，正确。
@@ -244,6 +281,13 @@ wmma::fragment<wmma::accumulator, 16, 16, 16, float> c_frag[2][4];
 \begin{itemize}[leftmargin=2em]
   \item 22.51ms，6106.947 GFLOPS（6.107 TFLOPS），正确；
   \item 19.09ms，7197.819 GFLOPS（7.198 TFLOPS），正确。
+\end{itemize}
+
+\textbf{瓶颈分析：}
+\begin{itemize}[leftmargin=2em]
+  \item FP16 Tensor Core 使用更适合矩阵专用单元的输入精度，计算吞吐上限明显高于传统 FP32 CUDA Core 路径。
+  \item 性能提升的关键不仅是数据类型切换，还包括 warp 子块划分、fragment 形状、shared memory layout 与写回映射保持一致。
+  \item 该阶段的主要瓶颈转为 Tensor Core 利用率、数据搬运供给能力以及 WMMA tile 组织效率；若数据供给不能持续匹配计算速度，Tensor Core 仍会出现利用不足。
 \end{itemize}
 
 \section{结果汇总}
@@ -289,6 +333,7 @@ Tensor Core FP16 & 19.09 & 7197.819 & 通过 \\
   \item FP16 Tensor Core 路径达到约 7.2 TFLOPS；
   \item 在性能提升过程中，最关键的是正确性守恒、布局一致性与瓶颈导向的结构迭代。
 \end{itemize}
+本实验关键代码已上传至 GitHub：\url{https://github.com/RealtaNua0822/cudaStudy}。
 
 \section{后续工作}
 \begin{enumerate}[leftmargin=2em]

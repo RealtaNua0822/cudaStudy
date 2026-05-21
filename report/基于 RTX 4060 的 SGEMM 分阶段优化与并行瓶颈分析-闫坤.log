@@ -1,10 +1,10 @@
-This is XeTeX, Version 3.141592653-2.6-0.999998 (TeX Live 2026) (preloaded format=xelatex 2026.4.20)  21 MAY 2026 09:37
+This is XeTeX, Version 3.141592653-2.6-0.999998 (TeX Live 2026) (preloaded format=xelatex 2026.4.20)  21 MAY 2026 10:09
 entering extended mode
  restricted \write18 enabled.
  file:line:error style messages enabled.
  %&-line parsing enabled.
-**cuda_optimization_full_report
-(./cuda_optimization_full_report.tex
+**"基于 RTX 4060 的 SGEMM 分阶段优化与并行瓶颈分析-闫坤"
+(./基于 RTX 4060 的 SGEMM 分阶段优化与并行瓶颈分析-闫坤.tex
 LaTeX2e <2025-11-01>
 L3 programming layer <2026-01-19>
 (d:/SOFTWARE/texlive/2026/texmf-dist/tex/latex/ctex/ctexart.cls (d:/SOFTWARE/texlive/2026/texmf-dist/tex/latex/ctex/config/ctexbackend.cfg
@@ -634,8 +634,8 @@ Package caption Info: longtable package is loaded.
 Package: ltcaption 2021/01/08 v1.4c longtable captions (AR)
 ))
 Package hyperref Info: Option `colorlinks' set `true' on input line 13.
- (./cuda_optimization_full_report.aux)
-\openout1 = `cuda_optimization_full_report.aux'.
+ (./基于 RTX 4060 的 SGEMM 分阶段优化与并行瓶颈分析-闫坤.aux)
+\openout1 = `"基于 RTX 4060 的 SGEMM 分阶段优化与并行瓶颈分析-闫坤.aux"'.
 
 LaTeX Font Info:    Checking defaults for OML/cmm/m/it on input line 27.
 LaTeX Font Info:    ... okay on input line 27.
@@ -750,18 +750,18 @@ LaTeX Font Info:    Overwriting math alphabet `\mathtt' in version `bold'
 * (1in=72.27pt=25.4mm, 1cm=28.453pt)
 
 Package hyperref Info: Link coloring ON on input line 27.
-(./cuda_optimization_full_report.out) (./cuda_optimization_full_report.out)
+(./基于 RTX 4060 的 SGEMM 分阶段优化与并行瓶颈分析-闫坤.out) (./基于 RTX 4060 的 SGEMM 分阶段优化与并行瓶颈分析-闫坤.out)
 \@outlinefile=\write3
-\openout3 = `cuda_optimization_full_report.out'.
+\openout3 = `"基于 RTX 4060 的 SGEMM 分阶段优化与并行瓶颈分析-闫坤.out"'.
 
 \c@lstlisting=\count362
 Package caption Info: Begin \AtBeginDocument code.
 Package caption Info: End \AtBeginDocument code.
- (./cuda_optimization_full_report.toc [1
+ (./基于 RTX 4060 的 SGEMM 分阶段优化与并行瓶颈分析-闫坤.toc [1
 
 ])
 \tf@toc=\write4
-\openout4 = `cuda_optimization_full_report.toc'.
+\openout4 = `"基于 RTX 4060 的 SGEMM 分阶段优化与并行瓶颈分析-闫坤.toc"'.
 
 LaTeX Font Info:    Font shape `TU/SimSun(0)/m/sl' in size <12> not available
 (Font)              Font shape `TU/SimSun(0)/m/it' tried instead on input line 30.
@@ -798,24 +798,29 @@ File: lstlang1.sty 2025/11/14 1.11b listings language file
 File: lstlang1.sty 2025/11/14 1.11b listings language file
 )
 LaTeX Font Info:    Font shape `TU/lmtt/bx/n' in size <10.95> not available
-(Font)              Font shape `TU/lmtt/b/n' tried instead on input line 103.
+(Font)              Font shape `TU/lmtt/b/n' tried instead on input line 100.
  (d:/SOFTWARE/texlive/2026/texmf-dist/tex/latex/listings/lstlang1.sty
 File: lstlang1.sty 2025/11/14 1.11b listings language file
 ) (d:/SOFTWARE/texlive/2026/texmf-dist/tex/latex/listings/lstlang1.sty
 File: lstlang1.sty 2025/11/14 1.11b listings language file
 ) (d:/SOFTWARE/texlive/2026/texmf-dist/tex/latex/listings/lstmisc.sty
 File: lstmisc.sty 2025/11/14 1.11b (Carsten Heinz)
-) [5] [6] [7]
+) [5]
+Overfull \hbox (47.10643pt too wide) in paragraph at lines 162--163
+[]\TU/lmr/m/n/12 Shared Memory \TU/SimSun(0)/m/n/12 访 问 延 迟 远 低 于 \TU/lmr/m/n/12 global memory\TU/SimSun(0)/m/n/12 ，|  但 仍 需 要 同 步 与 \TU/lmr/m/n/12 tile \TU/SimSun(0)/m/n/12 加 载，| \TU/lmtt/m/n/12 __syncthreads()
+ []
+
+[6] [7] [8]
 
 LaTeX Font Warning: Font shape `TU/FangSong(0)/m/it' undefined
-(Font)              using `TU/FangSong(0)/m/n' instead on input line 239.
+(Font)              using `TU/FangSong(0)/m/n' instead on input line 272.
 
-
-Overfull \hbox (48.79594pt too wide) detected at line 280
+[9]
+Overfull \hbox (48.79594pt too wide) detected at line 320
 [] \OMS/cmsy/m/n/12 ! [] ! [] ! []
  []
 
-[8] [9] (./cuda_optimization_full_report.aux)
+[10] [11] (./基于 RTX 4060 的 SGEMM 分阶段优化与并行瓶颈分析-闫坤.aux)
  ***********
 LaTeX2e <2025-11-01>
 L3 programming layer <2022/08/05>
@@ -824,16 +829,16 @@ L3 programming layer <2022/08/05>
 
 LaTeX Font Warning: Some font shapes were not available, defaults substituted.
 
-Package rerunfilecheck Info: File `cuda_optimization_full_report.out' has not changed.
-(rerunfilecheck)             Checksum: 112353110DC6F078EBA3E24C69A07E83;3095.
+Package rerunfilecheck Info: File `"基于 RTX 4060 的 SGEMM 分阶段优化与并行瓶颈分析-闫坤".out' has not changed.
+(rerunfilecheck)             Checksum: <no file>.
  ) 
 Here is how much of TeX's memory you used:
- 19255 strings out of 468168
- 415302 string characters out of 5432357
- 1178614 words of memory out of 5000000
- 47726 multiletter control sequences out of 15000+600000
- 634793 words of font info for 97 fonts, out of 8000000 for 9000
+ 19189 strings out of 468168
+ 411151 string characters out of 5432357
+ 1124916 words of memory out of 5000000
+ 47659 multiletter control sequences out of 15000+600000
+ 634801 words of font info for 98 fonts, out of 8000000 for 9000
  1348 hyphenation exceptions out of 8191
- 93i,8n,111p,592b,1183s stack positions out of 10000i,1000n,20000p,200000b,200000s
+ 93i,8n,111p,600b,1834s stack positions out of 10000i,1000n,20000p,200000b,200000s
 
-Output written on cuda_optimization_full_report.pdf (9 pages).
+Output written on 基于 RTX 4060 的 SGEMM 分阶段优化与并行瓶颈分析-闫坤.pdf (11 pages).
