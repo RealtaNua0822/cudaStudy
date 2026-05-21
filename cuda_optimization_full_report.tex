@@ -1,0 +1,308 @@
+\documentclass[12pt,a4paper]{ctexart}
+\usepackage[margin=1in]{geometry}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{enumitem}
+\usepackage{amsmath}
+\usepackage{caption}
+
+\hypersetup{colorlinks=true,linkcolor=blue,urlcolor=blue,citecolor=blue}
+
+\lstset{
+  basicstyle=\ttfamily\small,
+  breaklines=true,
+  columns=fullflexible,
+  frame=single,
+  showstringspaces=false
+}
+
+\title{标准实验报告：基于 RTX 4060 的 SGEMM 分阶段优化与并行瓶颈分析}
+\author{realtanua}
+\date{\today}
+
+\begin{document}
+\maketitle
+\tableofcontents
+\newpage
+
+\section{摘要}
+本文围绕 4096\(\times\)4096 SGEMM，在 RTX 4060 Laptop（\texttt{sm\_89}）上开展分阶段优化实验。报告以前期认知构建为背景：明确 Grid/Block/Warp/Thread 层级、访存层次（Global/Shared/Register）、Warp 内 Bank Conflict 与广播机制、以及 Roofline 下的瓶颈迁移。实验路径为：\texttt{Naive} $\rightarrow$ \texttt{Shared Memory} $\rightarrow$ \texttt{Thread Tiling} $\rightarrow$ \texttt{Pipeline Double Buffer} $\rightarrow$ \texttt{Tensor Core(TF32)} $\rightarrow$ \texttt{Tensor Core(FP16)}。实测显示，FP32 传统路径达到约 4.0 TFLOPS，修正后的 FP16 Tensor Core 达到约 7.2 TFLOPS，且正确性稳定通过。
+
+\section{背景与问题提出}
+\subsection{认知背景}
+在本实验中，先通过与ai对话补充知识，然后开始实验，实验中的所有优化建立在以下认知闭环上：
+\begin{itemize}[leftmargin=2em]
+  \item \textbf{执行层级：} Grid $\rightarrow$ Block $\rightarrow$ Warp $\rightarrow$ Thread。
+  \item \textbf{时间与空间解耦：} Warp 数量决定空间并行宽度，K 轴循环决定时间展开长度。
+  \item \textbf{核心瓶颈：} Naive 版本主要受 Global Memory 延迟约束（Long Scoreboard Stall）。
+  \item \textbf{优化核心：} 通过 Shared/Reg 复用提高算术强度，最终以流水与 Tensor Core 提升吞吐上限。
+  \item \textbf{冲突认知修正：} Bank Conflict 是 \textbf{Warp 内} 同周期访问问题，不是 Warp 间“同时访问”问题。
+  \item \textbf{算术强度（Arithmetic Intensity）}：
+  \[
+  I = \frac{\text{FLOPs}}{\text{Bytes moved}}
+  \]
+  提高 \(I\) 往往比单纯提高 Occupancy 更直接有效。
+  \item \textbf{Occupancy 不是唯一目标}：高寄存器占用可能降低 Occupancy，但若显著提升数据复用，仍可能获得更高吞吐。
+  \item \textbf{profiling 时间解读}：\texttt{ncu} 多 pass 会显著增加程序总时间，需分离“被测 kernel 时间”和“分析开销”。
+\end{itemize}
+
+\subsection{实验问题}
+本报告聚焦回答以下问题：
+\begin{enumerate}[leftmargin=2em,label=Q\arabic*.]
+  \item 为什么 Naive SGEMM 在大矩阵下性能较低？
+  \item Shared Memory 与 Thread Tiling 分别解决了什么问题？
+  \item 双缓冲流水线为什么能继续提速，但提升幅度通常小于前两阶段？
+  \item Tensor Core 路径下，为什么“能编译”不等于“高性能且正确”？
+\end{enumerate}
+
+\section{实验目标}
+\begin{enumerate}[leftmargin=2em]
+  \item 构建从功能正确到高吞吐的 SGEMM 优化路径。
+  \item 验证每种优化策略在真实硬件上的收益与代价。
+  \item 给出可复用的“瓶颈定位 $\rightarrow$ 结构改造 $\rightarrow$ 回归验证”方法。
+\end{enumerate}
+
+\section{实验环境与方法}
+\subsection{环境}
+\begin{itemize}[leftmargin=2em]
+  \item GPU：NVIDIA RTX 4060 Laptop（Ada，\texttt{sm\_89}）
+  \item OS：Linux 22.04
+  \item CUDA：13.2.1
+  \item 代码目录：\texttt{~/cuda\_study}
+\end{itemize}
+
+\subsection{统一任务定义}
+\begin{itemize}[leftmargin=2em]
+  \item 规模：\(N=4096\)
+  \item 输入：\(A_{ij}=1.0\), \(B_{ij}=2.0\)
+  \item 正确性：\(C[0][0]=2N=8192\)
+\end{itemize}
+
+\subsection{性能指标}
+\[
+\mathrm{GFLOPS} = \frac{2N^3 \times 10^{-9}}{t_{ms}/1000}
+\]
+
+\subsection{编译与分析命令}
+\begin{lstlisting}[language=bash]
+# build
+nvcc -O3 -arch=sm_89 xxx.cu -o xxx
+
+# run
+./xxx
+
+# profile (optional)
+/usr/local/cuda-13.2/bin/ncu --section SpeedOfLight ./xxx
+\end{lstlisting}
+
+\section{分阶段优化实现}
+
+\subsection{V1：Naive SGEMM（基线）}
+\textbf{目标：} 建立功能与性能起点。
+
+\textbf{关键代码：}
+\begin{lstlisting}[language=C++]
+__global__ void matrixMulNaive(float* A, float* B, float* C, int N) {
+    int row = blockIdx.y * blockDim.y + threadIdx.y;
+    int col = blockIdx.x * blockDim.x + threadIdx.x;
+    if (row < N && col < N) {
+        float sum = 0.f;
+        for (int k = 0; k < N; ++k) {
+            sum += A[row * N + k] * B[k * N + col];
+        }
+        C[row * N + col] = sum;
+    }
+}
+\end{lstlisting}
+
+\textbf{现象与结论：}
+\begin{itemize}[leftmargin=2em]
+  \item 代表结果：259.142ms，530.362 GFLOPS，正确。
+  \item 典型瓶颈：global memory 访问频繁、复用不足，易出现 Long Scoreboard Stall。
+\end{itemize}
+
+\subsection{V2：Shared Memory Tiling}
+\textbf{目标：} 降低 global memory 重复加载。
+
+\textbf{关键代码：}
+\begin{lstlisting}[language=C++]
+__shared__ float sA[32][32];
+__shared__ float sB[32][32];
+
+sA[threadIdx.y][threadIdx.x] = A[(row)*N + (tile + threadIdx.x)];
+sB[threadIdx.y][threadIdx.x] = B[(tile + threadIdx.y)*N + col];
+__syncthreads();
+
+for (int k = 0; k < 32; ++k)
+    sum += sA[threadIdx.y][k] * sB[k][threadIdx.x];
+__syncthreads();
+\end{lstlisting}
+
+\textbf{结论：}
+通过片上复用显著降低显存往返，性能较 Naive 大幅提升。
+
+\subsection{V3：Thread Tiling（寄存器外积）}
+\textbf{目标：} 提高每次加载的计算产出（提升算术强度）。
+
+\textbf{关键代码：}
+\begin{lstlisting}[language=C++]
+float accum[8][8] = {0.f};
+float regA[8], regB[8];
+
+for (int k = 0; k < BK; ++k) {
+    #pragma unroll
+    for (int i = 0; i < 8; ++i) regA[i] = s_A[k][ty * 8 + i];
+    #pragma unroll
+    for (int j = 0; j < 8; ++j) regB[j] = s_B[k][tx * 8 + j];
+
+    #pragma unroll
+    for (int i = 0; i < 8; ++i)
+        #pragma unroll
+        for (int j = 0; j < 8; ++j)
+            accum[i][j] += regA[i] * regB[j];
+}
+\end{lstlisting}
+
+\textbf{代表结果：} 35.17ms，3907.926 GFLOPS，正确。
+
+\textbf{结论：}
+单线程计算密度上升后，性能进入约 4 TFLOPS 区间，接近传统 FP32 路径上限。
+
+\subsection{V4：Pipeline 双缓冲}
+\textbf{目标：} 重叠“搬运下一块”与“计算当前块”。
+
+\textbf{关键代码：}
+\begin{lstlisting}[language=C++]
+__shared__ float s_A[2][BK][BM];
+__shared__ float s_B[2][BK][BN];
+int read_stage = 0, write_stage = 1;
+
+for (int ph = 1; ph < N / BK; ++ph) {
+    // load to write_stage
+    // compute from read_stage
+    __syncthreads();
+    read_stage = write_stage;
+    write_stage = 1 - write_stage;
+}
+\end{lstlisting}
+
+\textbf{代表结果：} 34.16ms，4023.916 GFLOPS，正确。
+
+\textbf{结论：}
+相比 V3 有稳定提升，但幅度有限：说明此时瓶颈已由纯访存等待转向更高层次（算力与调度约束）。
+
+\subsection{V5：Tensor Core（TF32, WMMA）}
+\textbf{目标：} 引入矩阵专用硬件单元。
+
+\textbf{关键代码：}
+\begin{lstlisting}[language=C++]
+using namespace nvcuda;
+
+wmma::fragment<wmma::matrix_a, 16, 16, 8,
+               wmma::precision::tf32, wmma::row_major> a_frag;
+wmma::fragment<wmma::matrix_b, 16, 16, 8,
+               wmma::precision::tf32, wmma::row_major> b_frag;
+wmma::fragment<wmma::accumulator, 16, 16, 8, float> c_frag[2][2];
+
+wmma::load_matrix_sync(a_frag, a_ptr, BK);
+wmma::load_matrix_sync(b_frag, b_ptr, BN);
+wmma::mma_sync(c_frag[i][j], a_frag, b_frag, c_frag[i][j]);
+\end{lstlisting}
+
+\textbf{关键排错：}
+\begin{itemize}[leftmargin=2em]
+  \item 命名空间与符号限定错误；
+  \item TF32 片段形状与实现不匹配（修正为 \texttt{16x16x8}）；
+  \item shared layout 与 \texttt{load\_matrix\_sync} 主序不一致；
+  \item \(B\) tile 搬运未覆盖完整导致结果折半。
+\end{itemize}
+
+\textbf{代表结果：} 33.46ms，4107.132 GFLOPS，正确。
+
+\subsection{V6：Tensor Core FP16（最终版本）}
+\textbf{目标：} 进一步提升 Tensor Core 吞吐。
+
+\textbf{关键代码：}
+\begin{lstlisting}[language=C++]
+wmma::fragment<wmma::matrix_a, 16, 16, 16, half, wmma::row_major> a_frag;
+wmma::fragment<wmma::matrix_b, 16, 16, 16, half, wmma::row_major> b_frag;
+wmma::fragment<wmma::accumulator, 16, 16, 16, float> c_frag[2][4];
+
+// 与 4x2 warp 布局匹配
+#define WM 32
+#define WN 64
+\end{lstlisting}
+
+\textbf{关键修复：}
+修正 warp 子块几何与写回映射（\texttt{WM=32,WN=64}），解决早期结果漂移（7680/40448）。
+
+\textbf{最终结果：}
+\begin{itemize}[leftmargin=2em]
+  \item 22.51ms，6106.947 GFLOPS（6.107 TFLOPS），正确；
+  \item 19.09ms，7197.819 GFLOPS（7.198 TFLOPS），正确。
+\end{itemize}
+
+\section{结果汇总}
+\begin{table}[h]
+\centering
+\caption{SGEMM 各阶段代表性结果（N=4096）}
+\begin{tabular}{lccc}
+\toprule
+版本 & 耗时(ms) & 吞吐(GFLOPS) & 正确性 \\
+\midrule
+Naive & 259.142 & 530.362 & 通过 \\
+Thread Tiling & 35.17 & 3907.926 & 通过 \\
+Pipeline & 34.16 & 4023.916 & 通过 \\
+Tensor Core TF32 & 33.46 & 4107.132 & 通过 \\
+Tensor Core FP16 & 19.09 & 7197.819 & 通过 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{讨论：瓶颈迁移与方法论沉淀}
+\subsection{瓶颈迁移路径}
+\[
+\text{Naive(Global memory bound)}
+\rightarrow
+\text{Shared/Reg reuse}
+\rightarrow
+\text{Pipeline overlap}
+\rightarrow
+\text{Tensor Core utilization}
+\]
+
+\subsection{三条稳定有效的工程原则}
+\begin{enumerate}[leftmargin=2em]
+  \item 先验证数值，再谈性能；
+  \item 每次只改一个核心结构，便于归因；
+  \item 读懂指标语义（kernel 时间、总程序时间、profiling 开销）再下结论。
+\end{enumerate}
+
+\section{结论}
+本实验以认知构建为起点，完成了 SGEMM 的完整分阶段优化闭环，并通过真实硬件数据验证了优化有效性：
+\begin{itemize}[leftmargin=2em]
+  \item FP32 传统路径稳定到约 4.0 TFLOPS；
+  \item FP16 Tensor Core 路径达到约 7.2 TFLOPS；
+  \item 在性能提升过程中，最关键的是正确性守恒、布局一致性与瓶颈导向的结构迭代。
+\end{itemize}
+
+\section{后续工作}
+\begin{enumerate}[leftmargin=2em]
+  \item 引入 \texttt{cp.async} 与更深流水；
+  \item 建立自动化基准（P50/P90、多轮稳定性）；
+  \item 增加 \texttt{cublasGemmEx} 对照；
+  \item 迁移方法到 Attention/Fused MLP 算子。
+\end{enumerate}
+
+\appendix
+\section{编译说明}
+\begin{lstlisting}[language=bash]
+cd ~/ai-infra/cuda_study
+xelatex cuda_optimization_full_report.tex
+\end{lstlisting}
+
+\end{document}
